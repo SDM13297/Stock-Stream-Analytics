@@ -1,0 +1,99 @@
+name: Continuous Integration & Quality Checks
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test_and_lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Run tests against multiple Python versions, crucial for dependency compatibility
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies (including dev tools)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        # Install development/testing tools
+        pip install pytest pytest-cov black flake8 bandit safety
+
+    - name: Set environment variables for testing
+      run: |
+        # Required for PyTest to locate source modules
+        echo "PYTHONPATH=$PYTHONPATH:$PWD/src" >> $GITHUB_ENV 
+        echo "TESTING=true" >> $GITHUB_ENV
+
+    - name: Run code formatting check (black)
+      run: |
+        # Ensures all code adheres to the style defined in pyproject.toml
+        black --check src/ dags/
+
+    - name: Run linting (flake8)
+      run: |
+        # Checks for syntax errors and style violations
+        flake8 src/ dags/ --count --max-complexity=10 --max-line-length=88 --statistics
+
+    - name: Run unit tests
+      run: |
+        # Execute tests and generate coverage report
+        pytest src/ --cov=src --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage reports
+      # Only upload coverage from one Python version to avoid conflicts
+      uses: codecov/codecov-action@v3
+      if: matrix.python-version == '3.10'
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install security tools
+      run: |
+        pip install safety bandit
+
+    - name: Security scan with bandit (Source Code)
+      run: |
+        # Scans Python source files for common security issues
+        bandit -r src/ -f html -o bandit-report.html || true
+
+    - name: Check dependencies with safety
+      run: |
+        # Checks dependencies against known vulnerabilities
+        safety check --full-report -r requirements.txt || true
+
+    - name: Upload security scan reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-reports
+        path: |
+          bandit-report.html
